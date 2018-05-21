@@ -4,8 +4,8 @@
  * Copyright 2014      Lucas Jones <https://github.com/lucasjones>
  * Copyright 2014-2016 Wolf9466    <https://github.com/OhGodAPet>
  * Copyright 2016      Jay D Dee   <jayddee246@gmail.com>
- * Copyright 2016-2017 XMRig       <support@xmrig.com>
- *
+ * Copyright 2017-2018 XMR-Stak    <https://github.com/fireice-uk>, <https://github.com/psychocrypt>
+ * Copyright 2016-2018 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
  *
  *   This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -22,62 +22,81 @@
  */
 
 
+#include "common/crypto/keccak.h"
+#include "common/net/Client.h"
+#include "common/Platform.h"
+#include "common/xmrig.h"
+#include "core/Config.h"
+#include "core/Controller.h"
+#include "donate.h"
 #include "interfaces/IStrategyListener.h"
-#include "net/Client.h"
 #include "net/strategies/DonateStrategy.h"
-#include "Options.h"
+#include "proxy/Counters.h"
+#include "proxy/StatsData.h"
 
 
-extern "C"
-{
-#include "crypto/c_keccak.h"
+static inline float randomf(float min, float max) {
+    return (max - min) * ((((float) rand()) / (float) RAND_MAX)) + min;
 }
 
 
-static inline int random(int min, int max){
-   return min + rand() / (RAND_MAX / (max - min + 1) + 1);
-}
-
-
-DonateStrategy::DonateStrategy(const char *agent, IStrategyListener *listener) :
+DonateStrategy::DonateStrategy(xmrig::Controller *controller, IStrategyListener *listener) :
     m_active(false),
-    m_suspended(false),
     m_listener(listener),
     m_donateTicks(0),
     m_target(0),
-    m_ticks(0)
+    m_ticks(0),
+    m_controller(controller)
 {
     uint8_t hash[200];
     char userId[65] = { 0 };
-    const char *user = Options::i()->pools().front()->user();
+    const char *user = controller->config()->pools().front().user();
 
-    keccak(reinterpret_cast<const uint8_t *>(user), static_cast<int>(strlen(user)), hash, sizeof(hash));
+    xmrig::keccak(reinterpret_cast<const uint8_t *>(user), strlen(user), hash);
     Job::toHex(hash, 32, userId);
 
-    Url *url = new Url("proxy-fee.xmrig.com", Options::i()->coin() && strncmp(Options::i()->coin(), "aeon", 4) ? 3333 : 443, userId, nullptr, false, true);
+    m_client = new Client(-1, Platform::userAgent(), this);
+    m_client->setPool(Pool("proxy.fee.xmrig.com", 9999, userId, nullptr));
+    m_client->setRetryPause(1000);
+    m_client->setAlgo(controller->config()->algorithm());
+    m_client->setQuiet(true);
 
-    m_client = new Client(-1, agent, this);
-    m_client->setUrl(url);
-    m_client->setRetryPause(Options::i()->retryPause() * 1000);
+    m_target = (100 - controller->config()->donateLevel()) * 60 * randomf(0.5, 1.5);
+}
 
-    delete url;
 
-    m_target = random(3000, 9000);
+DonateStrategy::~DonateStrategy()
+{
+    m_client->deleteLater();
 }
 
 
 bool DonateStrategy::reschedule()
 {
-    const uint64_t level = Options::i()->donateLevel() * 60;
+    const uint64_t level = m_controller->config()->donateLevel() * 60;
     if (m_donateTicks < level) {
         return false;
     }
 
-    m_target = m_ticks + (6000 * ((double) m_donateTicks / level));
+    m_target = m_ticks + ((6000 - level) * ((double) m_donateTicks / level));
     m_active = false;
 
     stop();
     return true;
+}
+
+
+void DonateStrategy::save(const Client *client, const Job &job)
+{
+    m_pending.job  = job;
+    m_pending.host = client->host();
+    m_pending.port = client->port();
+}
+
+
+void DonateStrategy::setAlgo(const xmrig::Algorithm &algorithm)
+{
+    m_client->setAlgo(algorithm);
 }
 
 
@@ -89,13 +108,11 @@ int64_t DonateStrategy::submit(const JobResult &result)
 
 void DonateStrategy::connect()
 {
-    m_suspended = false;
 }
 
 
 void DonateStrategy::stop()
 {
-    m_suspended   = true;
     m_donateTicks = 0;
     m_client->disconnect();
 }
@@ -105,13 +122,15 @@ void DonateStrategy::tick(uint64_t now)
 {
     m_client->tick(now);
 
-    if (m_suspended) {
-        return;
-    }
-
     m_ticks++;
 
     if (m_ticks == m_target) {
+        if (kFreeThreshold > 0 && Counters::miners() < kFreeThreshold) {
+            m_target += 600;
+            return;
+        }
+
+        m_pending.job.reset();
         m_client->connect();
     }
 
@@ -136,10 +155,10 @@ void DonateStrategy::onJobReceived(Client *client, const Job &job)
 {
     if (!isActive()) {
         m_active = true;
-        m_listener->onActive(client);
+        m_listener->onActive(this, client);
     }
 
-    m_listener->onJob(client, job);
+    m_listener->onJob(this, client, job);
 }
 
 
@@ -150,5 +169,5 @@ void DonateStrategy::onLoginSuccess(Client *client)
 
 void DonateStrategy::onResultAccepted(Client *client, const SubmitResult &result, const char *error)
 {
-    m_listener->onResultAccepted(client, result, error);
+    m_listener->onResultAccepted(this, client, result, error);
 }

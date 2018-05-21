@@ -1,3 +1,56 @@
+# v2.6.2
+ - [#197](https://github.com/xmrig/xmrig-proxy/issues/197) Fixed compatibility with xmr-stak `rig_id` option, xmr-stak sent empty rig id if user not specify it.
+ - [#199](https://github.com/xmrig/xmrig-proxy/issues/199) Fixed various bugs in donation subsystem.
+
+# v2.6.0
+ - [#168](https://github.com/xmrig/xmrig-proxy/issues/168) Added support for [mining algorithm negotiation](https://github.com/xmrig/xmrig-proxy/blob/dev/doc/STRATUM_EXT.md#1-mining-algorithm-negotiation).
+ - Added support for **rig-id** stratum protocol extensions, compatible with xmr-stak.
+ - A lot of small fixes and better unification with miner code.
+
+# v2.5.3
+- Fixed critical bug, in some cases proxy was can't recovery connection and switch to failover pool, version 2.5.2 affected.
+- Added configurable keepalive support, now possible override default timeout (60 seconds) via config file (only).
+- Fixed wrong miners count in 32 bit builds.
+
+# v2.5.2
+- [#448](https://github.com/xmrig/xmrig/issues/478) Fixed broken reconnect.
+
+# v2.5.0
+- [#119](https://github.com/xmrig/xmrig-proxy/issues/119) Added graceful reload support, pools and some other settings now can changed without proxy restart.
+- [#123](https://github.com/xmrig/xmrig-proxy/issues/123) Fixed regression (all versions since 2.4 affected) fragmented responses from pool/miner was parsed incorrectly.
+- [#40](https://github.com/xmrig/xmrig-proxy/issues/40#issuecomment-370202169) Added API endpoint `PUT /1/config` to update current config.
+- [#118](https://github.com/xmrig/xmrig-proxy/issues/118#issuecomment-375172833) Added alternative working mode, in that mode proxy support chaining and nicehash.com but lose ability to reduce connection count.
+- Added API endpoint `GET /1/config` to get current active config.
+- Messages `use pool` now shown only in verbose mode.
+- Added IPv6 support:
+  - IPv6 now fully supported for connections to upstream pools.
+  - `bind` now accept IPv6 addresses, for example, use `[::]:3333` to bind on all IPv6 interfaces and port 3333. 
+  - Internal HTTP server now support IPv6 for incoming connections.
+- New command line options (with equivalent config file options):
+  - Added `--mode` to switch working mode.
+  - Added `--reuse-timeout` to set timeout in seconds for reuse pool connections in simple mode.
+  - Added `--no-watch` and config option `watch` to disable config file watching.
+  - Added `--variant` to override PoW settings on xmrig miners.
+  - Added `--api-no-ipv6` and similar config option to disable IPv6 support for HTTP API.
+  - Added `--algo` to specify algorithm cryptonight or cryptonight-lite.
+  - Added `--api-no-restricted` to enable full access to api, this option has no effect if `--api-access-token` not specified.
+- Deprecations:
+  - Option `coin` now deprecated, use `algo` instead.
+  - API endpoint `GET /` now deprecated, use `GET /1/summary` instead.
+  - API endpoint `GET /workers.json`, use `GET /1/workers` instead.
+
+# v2.4.5
+- [#109](https://github.com/xmrig/xmrig-proxy/issues/109) Hashrate reports now more detailed for low speed workers.
+- [#200](https://github.com/xmrig/xmrig/issues/200) In some cases proxy was doesn't write log to stdout.
+
+# v2.4.4
+ - Added libmicrohttpd version to --version output.
+ - Fixed bug in singal handler, in some cases proxy wasn't shutdown properly.
+ - Fixed recent MSVC 2017 version detection.
+ - Fixed in default `config.json` was missing option `colors`.
+ - [#37](https://github.com/xmrig/xmrig-proxy/issues/37) Fixed ARM build.
+ - [#70](https://github.com/xmrig/xmrig-proxy/issues/70) Now used kH/s instead of KH/s.
+ 
 # v2.4.2
  - [#153](https://github.com/xmrig/xmrig/issues/153) Fixed issues with dwarfpool.com.
 

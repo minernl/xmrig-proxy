@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 2.8)
 project(xmrig-proxy)
 
 
@@ -11,32 +11,45 @@ include (CheckIncludeFile)
 
 set(HEADERS
     src/3rdparty/align.h
-    src/api/Api.h
-    src/api/ApiState.h
     src/App.h
-    src/Console.h
+    src/common/config/CommonConfig.h
+    src/common/config/ConfigLoader.h
+    src/common/config/ConfigWatcher.h
+    src/common/Console.h
+    src/common/crypto/Algorithm.h
+    src/common/crypto/keccak.h
+    src/common/log/ConsoleLog.h
+    src/common/log/FileLog.h
+    src/common/log/Log.h
+    src/common/net/Client.h
+    src/common/net/Id.h
+    src/common/net/Job.h
+    src/common/net/Pool.h
+    src/common/net/Storage.h
+    src/common/net/strategies/FailoverStrategy.h
+    src/common/net/strategies/SinglePoolStrategy.h
+    src/common/Platform.h
+    src/common/xmrig.h
+    src/core/Config.h
+    src/core/ConfigLoader_platform.h
+    src/core/Controller.h
     src/donate.h
     src/interfaces/IClientListener.h
+    src/interfaces/IConfig.h
+    src/interfaces/IConfigCreator.h
     src/interfaces/IConsoleListener.h
+    src/interfaces/IControllerListener.h
     src/interfaces/IEvent.h
     src/interfaces/IEventListener.h
     src/interfaces/ILogBackend.h
+    src/interfaces/ISplitter.h
     src/interfaces/IStrategy.h
     src/interfaces/IStrategyListener.h
+    src/interfaces/IWatcherListener.h
     src/log/AccessLog.h
-    src/log/ConsoleLog.h
-    src/log/FileLog.h
-    src/log/Log.h
     src/log/ShareLog.h
-    src/net/Client.h
-    src/net/Job.h
-    src/net/JobId.h
+    src/net/JobResult.h
     src/net/strategies/DonateStrategy.h
-    src/net/strategies/FailoverStrategy.h
-    src/net/strategies/SinglePoolStrategy.h
-    src/net/Url.h
-    src/Options.h
-    src/Platform.h
     src/proxy/Addr.h
     src/proxy/Counters.h
     src/proxy/CustomDiff.h
@@ -49,15 +62,18 @@ set(HEADERS
     src/proxy/events/LoginEvent.h
     src/proxy/events/MinerEvent.h
     src/proxy/events/SubmitEvent.h
-    src/proxy/JobResult.h
+    src/proxy/Login.h
     src/proxy/Miner.h
     src/proxy/Miners.h
     src/proxy/Proxy.h
     src/proxy/ProxyDebug.h
     src/proxy/Server.h
-    src/proxy/splitters/NonceMapper.h
-    src/proxy/splitters/NonceSplitter.h
-    src/proxy/splitters/NonceStorage.h
+    src/proxy/splitters/nicehash/NonceMapper.h
+    src/proxy/splitters/nicehash/NonceSplitter.h
+    src/proxy/splitters/nicehash/NonceStorage.h
+    src/proxy/splitters/simple/SimpleMapper.h
+    src/proxy/splitters/simple/SimpleSplitter.h
+    src/proxy/splitters/Splitter.h
     src/proxy/Stats.h
     src/proxy/StatsData.h
     src/proxy/TickingCounter.h
@@ -69,42 +85,48 @@ set(HEADERS
    )
 
 set(SOURCES
-    src/api/Api.cpp
-    src/api/ApiState.cpp
     src/App.cpp
-    src/Console.cpp
-    src/crypto/c_keccak.c
-    src/crypto/c_keccak.h
+    src/common/config/CommonConfig.cpp
+    src/common/config/ConfigLoader.cpp
+    src/common/config/ConfigWatcher.cpp
+    src/common/Console.cpp
+    src/common/crypto/Algorithm.cpp
+    src/common/crypto/keccak.cpp
+    src/common/log/ConsoleLog.cpp
+    src/common/log/FileLog.cpp
+    src/common/log/Log.cpp
+    src/common/net/Client.cpp
+    src/common/net/Job.cpp
+    src/common/net/Pool.cpp
+    src/common/net/strategies/FailoverStrategy.cpp
+    src/common/net/strategies/SinglePoolStrategy.cpp
+    src/common/net/SubmitResult.cpp
+    src/common/Platform.cpp
+    src/core/Config.cpp
+    src/core/Controller.cpp
     src/log/AccessLog.cpp
-    src/log/ConsoleLog.cpp
-    src/log/FileLog.cpp
-    src/log/Log.cpp
     src/log/ShareLog.cpp
-    src/net/Client.cpp
-    src/net/Job.cpp
+    src/net/JobResult.cpp
     src/net/strategies/DonateStrategy.cpp
-    src/net/strategies/FailoverStrategy.cpp
-    src/net/strategies/SinglePoolStrategy.cpp
-    src/net/SubmitResult.cpp
-    src/net/Url.cpp
-    src/Options.cpp
-    src/Platform.cpp
     src/proxy/Counters.cpp
     src/proxy/CustomDiff.cpp
     src/proxy/Error.cpp
     src/proxy/Events.cpp
     src/proxy/events/ConnectionEvent.h
     src/proxy/events/Event.cpp
-    src/proxy/JobResult.cpp
-    src/proxy/LoginRequest.cpp
+    src/proxy/events/MinerEvent.cpp
+    src/proxy/Login.cpp
     src/proxy/Miner.cpp
     src/proxy/Miners.cpp
     src/proxy/Proxy.cpp
     src/proxy/ProxyDebug.cpp
     src/proxy/Server.cpp
-    src/proxy/splitters/NonceMapper.cpp
-    src/proxy/splitters/NonceSplitter.cpp
-    src/proxy/splitters/NonceStorage.cpp
+    src/proxy/splitters/nicehash/NonceMapper.cpp
+    src/proxy/splitters/nicehash/NonceSplitter.cpp
+    src/proxy/splitters/nicehash/NonceStorage.cpp
+    src/proxy/splitters/simple/SimpleMapper.cpp
+    src/proxy/splitters/simple/SimpleSplitter.cpp
+    src/proxy/splitters/Splitter.cpp
     src/proxy/Stats.cpp
     src/proxy/workers/Worker.cpp
     src/proxy/workers/Workers.cpp
@@ -116,7 +138,7 @@ if (WIN32)
     set(SOURCES_OS
         res/app.rc
         src/App_win.cpp
-        src/Platform_win.cpp
+        src/common/Platform_win.cpp
         src/proxy/Uuid_win.cpp
         )
 
@@ -125,7 +147,7 @@ if (WIN32)
 elseif (APPLE)
     set(SOURCES_OS
         src/App_unix.cpp
-        src/Platform_mac.cpp
+        src/common/Platform_mac.cpp
         src/proxy/Uuid_mac.cpp
         )
 
@@ -134,21 +156,24 @@ elseif (APPLE)
 else()
     set(SOURCES_OS
         src/App_unix.cpp
-        src/Platform_unix.cpp
+        src/common/Platform_unix.cpp
         src/proxy/Uuid_unix.cpp
         )
 
-    set(EXTRA_LIBS pthread uuid)
+    if (CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
+        set(EXTRA_LIBS pthread)
+    else()
+        set(EXTRA_LIBS pthread uuid)
+    endif()
 endif()
 
 add_definitions(/DXMRIG_PROXY_PROJECT)
 add_definitions(/DUNICODE)
 add_definitions(/D__STDC_FORMAT_MACROS)
 add_definitions(/DAPP_DEVEL)
-add_definitions(/DNDEBUG)
 #add_definitions(/DAPP_DEBUG)
 
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     add_definitions(/DRAPIDJSON_SSE2)
 endif()
 
@@ -203,7 +228,7 @@ endif()
 CHECK_INCLUDE_FILE (syslog.h HAVE_SYSLOG_H)
 if (HAVE_SYSLOG_H)
     add_definitions(/DHAVE_SYSLOG_H)
-    set(SOURCES_SYSLOG src/log/SysLog.h src/log/SysLog.cpp)
+    set(SOURCES_SYSLOG src/common/log/SysLog.h src/common/log/SysLog.cpp)
 endif()
 
 if (WITH_GOOGLE_BREAKPAD)
@@ -218,7 +243,18 @@ if (WITH_HTTPD)
 
     if (MHD_FOUND)
         include_directories(${MHD_INCLUDE_DIRS})
-        set(HTTPD_SOURCES src/api/Httpd.h src/api/Httpd.cpp)
+        set(HTTPD_SOURCES
+            src/api/Api.h
+            src/api/ApiRouter.h
+            src/common/api/HttpBody.h
+            src/common/api/Httpd.h
+            src/common/api/HttpReply.h
+            src/common/api/HttpRequest.h
+            src/api/Api.cpp
+            src/api/ApiRouter.cpp
+            src/common/api/Httpd.cpp
+            src/common/api/HttpRequest.cpp
+            )
     else()
         message(FATAL_ERROR "microhttpd NOT found: use `-DWITH_HTTPD=OFF` to build without http deamon support")
     endif()

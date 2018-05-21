@@ -4,8 +4,8 @@
  * Copyright 2014      Lucas Jones <https://github.com/lucasjones>
  * Copyright 2014-2016 Wolf9466    <https://github.com/OhGodAPet>
  * Copyright 2016      Jay D Dee   <jayddee246@gmail.com>
- * Copyright 2016-2017 XMRig       <support@xmrig.com>
- *
+ * Copyright 2017-2018 XMR-Stak    <https://github.com/fireice-uk>, <https://github.com/psychocrypt>
+ * Copyright 2016-2018 XMRig       <https://github.com/xmrig>, <support@xmrig.com>
  *
  *   This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -26,26 +26,32 @@
 #include <string.h>
 
 
-#include "log/Log.h"
-#include "net/Job.h"
+#include "common/log/Log.h"
+#include "common/net/Job.h"
+#include "net/JobResult.h"
 #include "proxy/Counters.h"
 #include "proxy/Error.h"
 #include "proxy/Events.h"
 #include "proxy/events/CloseEvent.h"
 #include "proxy/events/LoginEvent.h"
 #include "proxy/events/SubmitEvent.h"
-#include "proxy/JobResult.h"
 #include "proxy/LoginRequest.h"
 #include "proxy/Miner.h"
 #include "proxy/Uuid.h"
 #include "rapidjson/document.h"
 #include "rapidjson/error/en.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 
 static int64_t nextId = 0;
+xmrig::Storage<Miner> Miner::m_storage;
 
 
-Miner::Miner() :
+Miner::Miner(bool nicehash, bool ipv6) :
+    m_ipv6(ipv6),
+    m_nicehash(nicehash),
+    m_ip(),
     m_id(++nextId),
     m_loginId(0),
     m_recvBufPos(0),
@@ -59,10 +65,11 @@ Miner::Miner() :
     m_tx(0),
     m_fixedByte(0)
 {
-    memset(m_ip, 0, sizeof(m_ip));
+    m_key = m_storage.add(this);
+
     Uuid::create(m_rpcId, sizeof(m_rpcId));
 
-    m_socket.data = this;
+    m_socket.data = m_storage.ptr(m_key);
     uv_tcp_init(uv_default_loop(), &m_socket);
 
     m_recvBuf.base = m_buf;
@@ -92,7 +99,12 @@ bool Miner::accept(uv_stream_t *server)
     int size = sizeof(addr);
 
     uv_tcp_getpeername(&m_socket, reinterpret_cast<sockaddr*>(&addr), &size);
-    uv_ip4_name(reinterpret_cast<sockaddr_in*>(&addr), m_ip, 16);
+
+    if (m_ipv6) {
+        uv_ip6_name(reinterpret_cast<sockaddr_in6*>(&addr), m_ip, 45);
+    } else {
+        uv_ip4_name(reinterpret_cast<sockaddr_in*>(&addr), m_ip, 16);
+    }
 
     uv_read_start(reinterpret_cast<uv_stream_t*>(&m_socket), Miner::onAllocBuffer, Miner::onRead);
 
@@ -108,33 +120,81 @@ void Miner::replyWithError(int64_t id, const char *message)
 
 void Miner::setJob(Job &job)
 {
-    snprintf(m_sendBuf, 4, "%02hhx", m_fixedByte);
+    using namespace rapidjson;
 
-    memcpy(job.rawBlob() + 84, m_sendBuf, 2);
+    if (m_nicehash) {
+        snprintf(m_sendBuf, 4, "%02hhx", m_fixedByte);
+        memcpy(job.rawBlob() + 84, m_sendBuf, 2);
+    }
 
     m_diff = job.diff();
     bool customDiff = false;
 
-    char target[9];
     if (m_customDiff && m_customDiff < m_diff) {
         const uint64_t t = 0xFFFFFFFFFFFFFFFFULL / m_customDiff;
-        Job::toHex(reinterpret_cast<const unsigned char *>(&t) + 4, 4, target);
-        target[8] = '\0';
+        Job::toHex(reinterpret_cast<const unsigned char *>(&t) + 4, 4, m_sendBuf);
+        m_sendBuf[8] = '\0';
         customDiff = true;
     }
 
-    int size = 0;
-    if (m_state == WaitReadyState) {
-        setState(ReadyState);
-        size = snprintf(m_sendBuf, sizeof(m_sendBuf), "{\"id\":%" PRId64 ",\"jsonrpc\":\"2.0\",\"result\":{\"id\":\"%s\",\"job\":{\"blob\":\"%s\",\"job_id\":\"%s%02hhx0\",\"target\":\"%s\"},\"status\":\"OK\"}}\n",
-                        m_loginId, m_rpcId, job.rawBlob(), job.id().data(), m_fixedByte, customDiff ? target : job.rawTarget());
-    }
-    else {
-        size = snprintf(m_sendBuf, sizeof(m_sendBuf), "{\"jsonrpc\":\"2.0\",\"method\":\"job\",\"params\":{\"blob\":\"%s\",\"job_id\":\"%s%02hhx0\",\"target\":\"%s\"}}\n",
-                        job.rawBlob(), job.id().data(), m_fixedByte, customDiff ? target : job.rawTarget());
+    sprintf(m_sendBuf + 16, "%s%02hhx0", job.id().data(), m_fixedByte);
+
+    Document doc(kObjectType);
+    auto &allocator = doc.GetAllocator();
+
+    Value params(kObjectType);
+    params.AddMember("blob",   StringRef(job.rawBlob()), allocator);
+    params.AddMember("job_id", StringRef(m_sendBuf + 16), allocator);
+    params.AddMember("target", StringRef(customDiff ? m_sendBuf : job.rawTarget()), allocator);
+    params.AddMember("algo",   StringRef(job.algorithm().shortName()), allocator);
+
+    if (job.algorithm().variant() == xmrig::VARIANT_0 || job.algorithm().variant() == xmrig::VARIANT_1) {
+        params.AddMember("variant", job.algorithm().variant(), allocator);
     }
 
-    send(size);
+    doc.AddMember("jsonrpc", "2.0", allocator);
+
+    if (m_state == WaitReadyState) {
+        setState(ReadyState);
+
+        doc.AddMember("id",    m_loginId, allocator);
+        doc.AddMember("error", kNullType, allocator);
+
+        Value result(kObjectType);
+        result.AddMember("id",  StringRef(m_rpcId), allocator);
+        result.AddMember("job", params, allocator);
+
+        Value extensions(kArrayType);
+        extensions.PushBack("algo", allocator);
+
+        if (m_nicehash) {
+            extensions.PushBack("nicehash", allocator);
+        }
+
+        result.AddMember("extensions", extensions, allocator);
+
+        doc.AddMember("result", result, allocator);
+        doc.AddMember("status", "OK", allocator);
+    }
+    else {
+        doc.AddMember("method", "job", allocator);
+        doc.AddMember("params", params, allocator);
+    }
+
+    StringBuffer buffer(0, 512);
+    Writer<StringBuffer> writer(buffer);
+    doc.Accept(writer);
+
+    const size_t size = buffer.GetSize();
+    if (size > (sizeof(m_sendBuf) - 2)) {
+        return;
+    }
+
+    memcpy(m_sendBuf, buffer.GetString(), size);
+    m_sendBuf[size]     = '\n';
+    m_sendBuf[size + 1] = '\0';
+
+    send(size + 1);
 }
 
 
@@ -155,7 +215,18 @@ bool Miner::parseRequest(int64_t id, const char *method, const rapidjson::Value 
             setState(WaitReadyState);
             m_loginId = id;
 
-            LoginEvent::create(this, id, params["login"].GetString(), params["pass"].GetString(), params["agent"].GetString())->start();
+            xmrig::Algorithms algorithms;
+            if (params.HasMember("algo")) {
+                const rapidjson::Value &value = params["algo"];
+
+                if (value.IsArray()) {
+                    for (const rapidjson::Value &algo : value.GetArray()) {
+                        algorithms.push_back(algo.GetString());
+                    }
+                }
+            }
+
+            LoginEvent::create(this, id, params["login"].GetString(), params["pass"].GetString(), params["agent"].GetString(), params["rigid"].GetString(), algorithms)->start();
             return true;
         }
 
@@ -175,16 +246,26 @@ bool Miner::parseRequest(int64_t id, const char *method, const rapidjson::Value 
             return true;
         }
 
-        SubmitEvent *event = SubmitEvent::create(this, id, params["job_id"].GetString(), params["nonce"].GetString(), params["result"].GetString());
+        xmrig::Algorithm algorithm;
+        if (params.HasMember("algo")) {
+            const char *algo = params["algo"].GetString();
+
+            algorithm.parseAlgorithm(algo);
+            if (!algorithm.isValid()) {
+                algorithm.parseXmrStakAlgorithm(algo);
+            }
+        }
+
+        SubmitEvent *event = SubmitEvent::create(this, id, params["job_id"].GetString(), params["nonce"].GetString(), params["result"].GetString(), algorithm);
 
         if (!event->request.isValid() || event->request.actualDiff() < diff()) {
             event->reject(Error::LowDifficulty);
         }
-        else if (!event->request.isCompatible(m_fixedByte)) {
+        else if (m_nicehash && !event->request.isCompatible(m_fixedByte)) {
             event->reject(Error::InvalidNonce);
         }
 
-        if (m_customDiff && event->request.actualDiff() < m_diff) {
+        if (event->error() == Error::NoError && m_customDiff && event->request.actualDiff() < m_diff) {
             success(id, "OK");
             return true;
         }
@@ -193,7 +274,7 @@ bool Miner::parseRequest(int64_t id, const char *method, const rapidjson::Value 
             replyWithError(id, event->message());
         }
 
-        return true;
+        return event->error() != Error::InvalidNonce;
     }
 
     if (strcmp(method, "keepalived") == 0) {
@@ -251,7 +332,7 @@ void Miner::send(int size)
 {
     LOG_DEBUG("[%s] send (%d bytes): \"%s\"", m_ip, size, m_sendBuf);
 
-    if (size <= 0 || m_state != ReadyState || uv_is_writable(reinterpret_cast<uv_stream_t*>(&m_socket)) == 0) {
+    if (size <= 0 || (m_state != ReadyState && m_state != WaitReadyState) || uv_is_writable(reinterpret_cast<uv_stream_t*>(&m_socket)) == 0) {
         return;
     }
 
@@ -296,8 +377,13 @@ void Miner::shutdown(bool had_error)
 
         if (uv_is_closing(reinterpret_cast<uv_handle_t*>(req->handle)) == 0) {
             uv_close(reinterpret_cast<uv_handle_t*>(req->handle), [](uv_handle_t *handle) {
-                CloseEvent::start(getMiner(handle->data));
-                delete static_cast<Miner*>(handle->data);
+                Miner *miner = getMiner(handle->data);
+                if (!miner) {
+                    return;
+                }
+
+                CloseEvent::start(miner);
+                m_storage.remove(handle->data);
             });
         }
 
@@ -309,6 +395,9 @@ void Miner::shutdown(bool had_error)
 void Miner::onAllocBuffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 {
     auto miner = getMiner(handle->data);
+    if (!miner) {
+        return;
+    }
 
     buf->base = &miner->m_recvBuf.base[miner->m_recvBufPos];
     buf->len  = miner->m_recvBuf.len - miner->m_recvBufPos;
@@ -318,6 +407,10 @@ void Miner::onAllocBuffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *
 void Miner::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
     auto miner = getMiner(stream->data);
+    if (!miner) {
+        return;
+    }
+
     if (nread < 0 || (size_t) nread > (sizeof(m_buf) - 8 - miner->m_recvBufPos)) {
         return miner->shutdown(nread != UV_EOF);;
     }
@@ -326,7 +419,7 @@ void Miner::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
     miner->m_recvBufPos += nread;
 
     char* end;
-    char* start = buf->base;
+    char* start = miner->m_recvBuf.base;
     size_t remaining = miner->m_recvBufPos;
 
     while ((end = static_cast<char*>(memchr(start, '\n', remaining))) != nullptr) {
@@ -343,11 +436,11 @@ void Miner::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
         return;
     }
 
-    if (start == buf->base) {
+    if (start == miner->m_recvBuf.base) {
         return;
     }
 
-    memcpy(buf->base, start, remaining);
+    memcpy(miner->m_recvBuf.base, start, remaining);
     miner->m_recvBufPos = remaining;
 }
 
@@ -355,6 +448,10 @@ void Miner::onRead(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 void Miner::onTimeout(uv_timer_t *handle)
 {
     auto miner = getMiner(handle->data);
+    if (!miner) {
+        return;
+    }
+
     miner->m_recvBuf.base[sizeof(m_buf) - 1] = '\0';
 
     miner->shutdown(true);
